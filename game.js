@@ -693,7 +693,7 @@ class InstructionsScene extends Phaser.Scene {
     spaceBox.fillRoundedRect(rx - 45, panelY + 184, 90, 22, 4);
     spaceBox.lineStyle(1, 0x00eeff, 0.8);
     spaceBox.strokeRoundedRect(rx - 45, panelY + 184, 90, 22, 4);
-    this.add.text(rx, panelY + 195, '[ SPACE ] to fire', {
+    this.add.text(rx, panelY + 195, '[ SPACE ] or click icon', {
       fontSize: '11px', fontFamily: 'monospace', color: '#00eeff'
     }).setOrigin(0.5);
 
@@ -701,9 +701,9 @@ class InstructionsScene extends Phaser.Scene {
       'Iron Beam charges over time.',
       '',
       'When fully charged, press',
-      'SPACE to unleash a laser',
-      'that destroys every missile',
-      'currently on screen.',
+      'SPACE or click the icon to',
+      'unleash a laser that destroys',
+      'every missile on screen.',
     ];
     instrLines2.forEach((line, i) => {
       this.add.text(rx, panelY + 250 + i * 19, line, {
@@ -870,7 +870,9 @@ class GameScene extends Phaser.Scene {
     const iconX = 36, iconY = GAME_HEIGHT - 36;
     this.ironBeamIcon = this.add.image(iconX, iconY, 'ironbeam')
       .setDisplaySize(44, 44)
-      .setOrigin(0.5, 0.5);
+      .setOrigin(0.5, 0.5)
+      .setInteractive({ useHandCursor: true })
+      .on('pointerdown', () => { if (this.ironBeamReady) this.fireIronBeam(); });
     this.ironBeamIconRing = this.add.graphics();
     this.ironBeamBarBg    = this.add.graphics();
     this.ironBeamBarFg    = this.add.graphics();
