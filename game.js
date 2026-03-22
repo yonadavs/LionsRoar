@@ -9,6 +9,7 @@ const EXPLOSION_DURATION = 1000;
 const HP_MAX = 100;
 const HP_DAMAGE        = { easy: 5, normal: 10, hard: 15 };
 const HP_DAMAGE_DEBRIS = { easy: 1, normal:  2, hard:  3 };
+const SCORE_PER_KILL   = { easy: 5, normal: 10, hard: 15 };
 const HI_SCORE_KEY = 'missileDefenseHi';
 
 const MISSILE_BASE_SPEED = { basic: 90, fast: 160, zigzag: 80, splitter: 85, stealth: 95, splitter_child: 90 };
@@ -564,7 +565,8 @@ class BootScene extends Phaser.Scene {
     this.load.audio('alert_2', 'resources/sounds/effects/alert_2.mp3');
     this.load.audio('bad', 'resources/sounds/effects/bad.mp3');
     this.load.audio('pop', 'resources/sounds/effects/pop.mp3');
-    this.load.audio('laser', 'resources/sounds/effects/laser.mp3');
+    this.load.audio('laser',  'resources/sounds/effects/laser.mp3');
+    this.load.audio('launch', 'resources/sounds/effects/launch.mp3');
     this.load.audio('menuMusic', 'resources/sounds/music/menu.mp3');
     this.load.audio('gameMusic', 'resources/sounds/music/game.mp3');
   }
@@ -1003,6 +1005,7 @@ class GameScene extends Phaser.Scene {
 
     // Keyboard
     this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+    this.launchSound = this.sound.add('launch');
 
     // Fade in all HUD elements
     const hudElements = [
@@ -1053,6 +1056,9 @@ class GameScene extends Phaser.Scene {
   }
 
   fireInterceptor(tx, ty) {
+    if (this.launchSound.isPlaying) this.launchSound.stop();
+    this.launchSound.play({ volume: getSettings().sfxVol });
+
     const interceptor = new Interceptor(this, tx, ty);
     this.interceptors.push(interceptor);
 
@@ -1083,12 +1089,13 @@ class GameScene extends Phaser.Scene {
     }
 
     if (kills > 0) {
+      const base = SCORE_PER_KILL[getSettings().difficulty];
       let pts;
       if (kills === 1) {
-        pts = 10;
+        pts = base;
         this.combo = 0;
       } else {
-        pts = kills * 10 + (kills - 1) * 5;
+        pts = kills * base + (kills - 1) * Math.floor(base / 2);
         this.combo += kills;
       }
 
@@ -1247,7 +1254,7 @@ class GameScene extends Phaser.Scene {
       for (const m of targets) {
         if (m.alive) {
           this.flashes.push(new Flash(this, m.x, m.y));
-          this.score += 10;
+          this.score += SCORE_PER_KILL[getSettings().difficulty];
           m.destroy();
         }
       }
