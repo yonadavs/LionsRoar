@@ -7,7 +7,8 @@ const INTERCEPTOR_SPEED = 350;
 const EXPLOSION_MAX_RADIUS = 60;
 const EXPLOSION_DURATION = 1000;
 const HP_MAX = 100;
-const HP_DAMAGE = { easy: 5, normal: 10, hard: 15 };
+const HP_DAMAGE        = { easy: 5, normal: 10, hard: 15 };
+const HP_DAMAGE_DEBRIS = { easy: 1, normal:  2, hard:  3 };
 const HI_SCORE_KEY = 'missileDefenseHi';
 
 const MISSILE_BASE_SPEED = { basic: 90, fast: 160, zigzag: 80, splitter: 85, stealth: 95, splitter_child: 90 };
@@ -280,6 +281,10 @@ class Interceptor {
       this.y = this.targetY;
       this.scene.explosions.push(new Explosion(this.scene, this.targetX, this.targetY));
       this.scene.sound.play('pop', { volume: getSettings().sfxVol });
+      const debrisCount = 3 + Math.floor(Math.random() * 4);
+      for (let i = 0; i < debrisCount; i++) {
+        this.scene.debris.push(new DebrisParticle(this.scene, this.targetX, this.targetY));
+      }
       this.alive = false;
       this.sprite.destroy();
       this.trailGraphics.destroy();
@@ -360,6 +365,84 @@ class Explosion {
       g.lineStyle(1, 0xffffff, (1 - shockT) * 0.5);
       g.strokeCircle(this.x, this.y, this.radius * (1 + shockT * 0.5));
     }
+  }
+
+  destroy() {
+    this.alive = false;
+    this.graphics.destroy();
+  }
+}
+
+// ─── DebrisParticle ──────────────────────────────────────────────────────────
+const DEBRIS_COLORS = [0xff8800, 0xff4400, 0xffaa44, 0xffcc00];
+const DEBRIS_TRAVEL_LIMIT = GAME_HEIGHT * 0.3;
+
+class DebrisParticle {
+  constructor(scene, x, y) {
+    this.scene = scene;
+    this.x = x;
+    this.y = y;
+    this.startY = y;
+    this.alive = true;
+    this.graphics = scene.add.graphics();
+    this.trail = [];
+
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 80 + Math.random() * 140;
+    this.vx = Math.cos(angle) * speed;
+    this.vy = Math.abs(Math.sin(angle)) * speed + 60; // bias downward
+    this.gravity = 220; // px/s²
+    this.size = 3 + Math.random() * 3;
+    this.color = DEBRIS_COLORS[Math.floor(Math.random() * DEBRIS_COLORS.length)];
+  }
+
+  update(delta) {
+    if (!this.alive) return;
+    const dt = delta / 1000;
+
+    this.trail.push({ x: this.x, y: this.y });
+    if (this.trail.length > 4) this.trail.shift();
+
+    this.vy += this.gravity * dt;
+    this.x  += this.vx * dt;
+    this.y  += this.vy * dt;
+
+    const traveled = this.y - this.startY;
+    const traveledFraction = traveled / DEBRIS_TRAVEL_LIMIT;
+
+    if (traveled >= DEBRIS_TRAVEL_LIMIT) {
+      this.alive = false;
+      this.graphics.destroy();
+      return;
+    }
+
+    if (this.y >= STATION_Y) {
+      const damage = HP_DAMAGE_DEBRIS[getSettings().difficulty] * (1 - traveledFraction);
+      this.scene.hp = Math.max(0, this.scene.hp - damage);
+      if (this.scene.hp <= 0) this.scene.endGame();
+      this.alive = false;
+      this.graphics.destroy();
+      return;
+    }
+
+    const alpha = 1 - traveledFraction;
+    const g = this.graphics;
+    g.clear();
+
+    // Trail
+    for (let i = 0; i < this.trail.length; i++) {
+      const t = (i + 1) / (this.trail.length + 1);
+      g.fillStyle(this.color, alpha * t * 0.5);
+      g.fillCircle(this.trail[i].x, this.trail[i].y, this.size * t * 0.7);
+    }
+
+    // Core glow
+    g.fillStyle(0xffffff, alpha * 0.6);
+    g.fillCircle(this.x, this.y, this.size * 0.45);
+
+    // Main body
+    g.fillStyle(this.color, alpha);
+    g.fillCircle(this.x, this.y, this.size);
   }
 
   destroy() {
@@ -475,6 +558,7 @@ class BootScene extends Phaser.Scene {
     this.load.image('citybg', 'resources/city_bg.png');
     this.load.audio('bad', 'resources/sounds/effects/bad.mp3');
     this.load.audio('pop', 'resources/sounds/effects/pop.mp3');
+    this.load.audio('laser', 'resources/sounds/effects/laser.mp3');
     this.load.audio('menuMusic', 'resources/sounds/music/menu.mp3');
     this.load.audio('gameMusic', 'resources/sounds/music/game.mp3');
   }
@@ -840,6 +924,7 @@ class GameScene extends Phaser.Scene {
     this.explosions = [];
     this.flashes = [];
     this.launchFlashes = [];
+    this.debris = [];
 
     this.combo = 0;
     this.comboTimer = 0;
@@ -1060,7 +1145,7 @@ class GameScene extends Phaser.Scene {
       ? Phaser.Display.Color.GetColor(Math.round((1 - pct) * 2 * 255), 210, 50)
       : Phaser.Display.Color.GetColor(220, Math.round(pct * 2 * 200), 30);
     g.fillStyle(color, 1);
-    g.fillRect(bx, by, Math.round(barW * pct), barH);
+    g.fillRect(bx, by, barW * pct, barH);
 
     // Border
     g.lineStyle(1, 0x668866, 0.8);
@@ -1127,6 +1212,7 @@ class GameScene extends Phaser.Scene {
     this.ironBeamReady  = false;
     this.ironBeamCharge = 0;
     this.ironBeamFiring = true;
+    this.sound.play('laser', { volume: getSettings().sfxVol });
 
     // Fire one laser per live enemy missile
     const targets = this.enemyMissiles.filter(m => m.alive);
@@ -1286,6 +1372,9 @@ class GameScene extends Phaser.Scene {
     // Update launch flashes
     for (const lf of this.launchFlashes) lf.update(delta);
 
+    // Update debris
+    for (const d of this.debris) d.update(delta);
+
     // Collisions & ground hits
     this.checkCollisions();
     this.checkGroundHits();
@@ -1296,6 +1385,7 @@ class GameScene extends Phaser.Scene {
     pruneArray(this.explosions);
     pruneArray(this.flashes);
     pruneArray(this.launchFlashes);
+    pruneArray(this.debris);
 
     // Iron Beam charge + fire
     const CHARGE_TIME = 7000;
