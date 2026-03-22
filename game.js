@@ -556,6 +556,12 @@ class BootScene extends Phaser.Scene {
     this.load.image('ironbeam', 'resources/iron_beam (1).png');
     this.load.image('lionsroar', 'resources/lions_roar.png');
     this.load.image('citybg', 'resources/city_bg.png');
+    this.load.atlas('male',           'resources/male/spritesheet/spritesheet.png',           'resources/male/spritesheet/spritesheet.json');
+    this.load.atlas('female',         'resources/female/spritesheet/spritesheet.png',         'resources/female/spritesheet/spritesheet.json');
+    this.load.atlas('frantic_female', 'resources/frantic_female/spritesheet/spritesheet.png', 'resources/frantic_female/spritesheet/spritesheet.json');
+    this.load.atlas('frantic_male',   'resources/frantic_male/spritesheet/spritesheet.png',   'resources/frantic_male/spritesheet/spritesheet.json');
+    this.load.image('alert', 'resources/alert.png');
+    this.load.audio('alert_2', 'resources/sounds/effects/alert_2.mp3');
     this.load.audio('bad', 'resources/sounds/effects/bad.mp3');
     this.load.audio('pop', 'resources/sounds/effects/pop.mp3');
     this.load.audio('laser', 'resources/sounds/effects/laser.mp3');
@@ -851,7 +857,7 @@ class InstructionsScene extends Phaser.Scene {
     settingsBtn.on('pointerdown', () => this.scene.start('Settings'));
 
     this.input.on('pointerdown', (pointer, currentlyOver) => {
-      if (currentlyOver.length === 0) this.scene.start('Game');
+      if (currentlyOver.length === 0) this.scene.start('Intro');
     });
   }
 }
@@ -909,6 +915,7 @@ class GameScene extends Phaser.Scene {
   constructor() { super('Game'); }
 
   create() {
+    this.sound.stopByKey('alert_2');
     this.sound.get('menuMusic').stop();
     this.sound.get('gameMusic').play();
     applyVolumes(this.sound);
@@ -941,28 +948,28 @@ class GameScene extends Phaser.Scene {
       .setOrigin(0.5, 1)
       .setScale(TURRET_SCALE);
 
-    // HUD text
+    // HUD text — start invisible, fade in after intro
     this.scoreText = this.add.text(10, 10, 'SCORE: 0', {
       fontSize: '20px', fontFamily: 'monospace', color: '#ffffff'
-    });
+    }).setAlpha(0);
     this.timeText = this.add.text(10, 35, 'TIME: 0', {
       fontSize: '16px', fontFamily: 'monospace', color: '#aaaaaa'
-    });
+    }).setAlpha(0);
     this.stageText = this.add.text(GAME_WIDTH - 10, 10, 'WAVE 1', {
       fontSize: '16px', fontFamily: 'monospace', color: '#ffaa44'
-    }).setOrigin(1, 0);
+    }).setOrigin(1, 0).setAlpha(0);
     this.hiText = this.add.text(GAME_WIDTH / 2, 10, `HI: ${localStorage.getItem(HI_SCORE_KEY)}`, {
       fontSize: '16px', fontFamily: 'monospace', color: '#ffdd00'
-    }).setOrigin(0.5, 0);
+    }).setOrigin(0.5, 0).setAlpha(0);
 
     // Health bar
-    this.hpGraphics = this.add.graphics();
-    this.add.text(GAME_WIDTH - 140, GAME_HEIGHT - 20, 'HP', {
+    this.hpGraphics = this.add.graphics().setAlpha(0);
+    this.hpLabel = this.add.text(GAME_WIDTH - 140, GAME_HEIGHT - 20, 'HP', {
       fontSize: '11px', fontFamily: 'monospace', color: '#88aa88'
-    }).setOrigin(1, 0.5);
+    }).setOrigin(1, 0.5).setAlpha(0);
 
     // Crosshair graphics
-    this.crosshairGraphics = this.add.graphics();
+    this.crosshairGraphics = this.add.graphics().setAlpha(0);
 
     // Cursor
     this.input.setDefaultCursor('none');
@@ -984,17 +991,27 @@ class GameScene extends Phaser.Scene {
     this.ironBeamIcon = this.add.image(iconX, iconY, 'ironbeam')
       .setDisplaySize(44, 44)
       .setOrigin(0.5, 0.5)
+      .setAlpha(0)
       .setInteractive({ useHandCursor: true })
       .on('pointerdown', () => { if (this.ironBeamReady) this.fireIronBeam(); });
-    this.ironBeamIconRing = this.add.graphics();
-    this.ironBeamBarBg    = this.add.graphics();
-    this.ironBeamBarFg    = this.add.graphics();
+    this.ironBeamIconRing = this.add.graphics().setAlpha(0);
+    this.ironBeamBarBg    = this.add.graphics().setAlpha(0);
+    this.ironBeamBarFg    = this.add.graphics().setAlpha(0);
     this.ironBeamLabel    = this.add.text(iconX, iconY - 30, 'IRON BEAM', {
       fontSize: '9px', fontFamily: 'monospace', color: '#88ddff'
-    }).setOrigin(0.5, 1);
+    }).setOrigin(0.5, 1).setAlpha(0);
 
     // Keyboard
     this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+
+    // Fade in all HUD elements
+    const hudElements = [
+      this.scoreText, this.timeText, this.stageText, this.hiText,
+      this.hpGraphics, this.hpLabel,
+      this.ironBeamIcon, this.ironBeamIconRing, this.ironBeamBarBg,
+      this.ironBeamBarFg, this.ironBeamLabel, this.crosshairGraphics,
+    ];
+    this.tweens.add({ targets: hudElements, alpha: 1, duration: 800, delay: 200 });
   }
 
   drawGround() {
@@ -1406,6 +1423,201 @@ class GameScene extends Phaser.Scene {
   }
 }
 
+// ─── Walker ──────────────────────────────────────────────────────────────────
+const FRANTIC_FRAME_COUNT = { frantic_female: 2, frantic_male: 4 };
+
+class Walker {
+  // franticType: null = peaceful walker, 'frantic_female' | 'frantic_male' = phase 2
+  constructor(scene, franticType = null) {
+    this.scene      = scene;
+    this.frameIndex = 0;
+    this.frameTimer = 0;
+    this.runoff     = false;
+
+    if (franticType) {
+      this.type          = franticType;
+      this.frameCount    = FRANTIC_FRAME_COUNT[franticType];
+      this.frameDuration = 80 + Math.random() * 60;
+      this.startX        = 0;
+      this.endX          = GAME_WIDTH;
+      this.speed         = 90 + Math.random() * 80;
+    } else {
+      this.type          = Math.random() < 0.5 ? 'male' : 'female';
+      this.frameCount    = this.type === 'male' ? 3 : 4;
+      this.frameDuration = 180 + Math.random() * 80;
+      const pathWidth    = 100 + Math.random() * 220;
+      const margin       = 40;
+      this.startX        = margin + Math.random() * (GAME_WIDTH - margin * 2 - pathWidth);
+      this.endX          = this.startX + pathWidth;
+      this.speed         = 35 + Math.random() * 45;
+    }
+
+    this.x         = this.startX + Math.random() * (this.endX - this.startX);
+    this.y         = GAME_HEIGHT - 30;
+    this.direction = Math.random() < 0.5 ? 1 : -1;
+    this.scale     = 0.13 + Math.random() * 0.04;
+
+    this.sprite = scene.add.sprite(this.x, this.y, this.type, 'frame_000')
+      .setOrigin(0.5, 1)
+      .setScale(this.scale)
+      .setFlipX(this.direction < 0);
+  }
+
+  startRunoff() {
+    this.runoff = true;
+    this.speed  = 220 + Math.random() * 100;
+  }
+
+  get offScreen() {
+    return this.x < -80 || this.x > GAME_WIDTH + 80;
+  }
+
+  update(delta) {
+    this.x += this.direction * this.speed * (delta / 1000);
+
+    if (!this.runoff) {
+      if (this.x >= this.endX) {
+        this.x = this.endX;
+        this.direction = -1;
+        this.sprite.setFlipX(true);
+      } else if (this.x <= this.startX) {
+        this.x = this.startX;
+        this.direction = 1;
+        this.sprite.setFlipX(false);
+      }
+    }
+
+    this.frameTimer += delta;
+    if (this.frameTimer >= this.frameDuration) {
+      this.frameTimer = 0;
+      this.frameIndex = (this.frameIndex + 1) % this.frameCount;
+    }
+
+    this.sprite.setFrame(`frame_00${this.frameIndex}`);
+    this.sprite.setPosition(this.x, this.y);
+  }
+}
+
+// ─── IntroScene ───────────────────────────────────────────────────────────────
+class IntroScene extends Phaser.Scene {
+  constructor() { super('Intro'); }
+
+  create() {
+    this.phase = 1;
+
+    // Background
+    this.add.image(GAME_WIDTH / 2, GAME_HEIGHT / 2, 'citybg')
+      .setDisplaySize(GAME_WIDTH, GAME_HEIGHT);
+
+    // Ground
+    const g = this.add.graphics();
+    g.fillStyle(0x334422, 1);
+    g.fillRect(0, GAME_HEIGHT - 30, GAME_WIDTH, 30);
+    g.lineStyle(2, 0x88aa44, 1);
+    g.beginPath(); g.moveTo(0, GAME_HEIGHT - 30); g.lineTo(GAME_WIDTH, GAME_HEIGHT - 30); g.strokePath();
+
+    // Turret — motionless, pointing straight up (frame 11)
+    this.add.sprite(STATION_X, GAME_HEIGHT - 30, 'turret', 11)
+      .setOrigin(0.5, 1).setScale(TURRET_SCALE);
+
+    // Phase 1 walkers
+    this.walkers = [];
+    const count = 4 + Math.floor(Math.random() * 5);
+    for (let i = 0; i < count; i++) this.walkers.push(new Walker(this, false));
+
+    // Alert image — hidden, depth 5 (above walkers)
+    this.alertImg = this.add.image(GAME_WIDTH / 2, GAME_HEIGHT / 2, 'alert')
+      .setDisplaySize(GAME_WIDTH * 0.3, GAME_HEIGHT * 0.3)
+      .setDepth(5).setVisible(false);
+
+    // Red border around the alert image — drawn once, toggled via alpha tween in phase 2
+    const alertW = GAME_WIDTH * 0.3, alertH = GAME_HEIGHT * 0.3;
+    const alertX = (GAME_WIDTH - alertW) / 2, alertY = (GAME_HEIGHT - alertH) / 2;
+    this.borderGfx = this.add.graphics().setDepth(6).setAlpha(0);
+    const bp = 10; // padding beyond alert image
+    this.borderGfx.lineStyle(10, 0xff0000, 1);
+    this.borderGfx.strokeRect(alertX - bp, alertY - bp, alertW + bp * 2, alertH + bp * 2);
+
+    // Alert sound — added now, played when phase 2 starts
+    this.alertSound = this.sound.add('alert_2', { loop: true, volume: getSettings().sfxVol });
+
+    // Bottom bar — depth 10, always on top of walkers; kept slim and dim
+    const bar = this.add.graphics().setDepth(10);
+    bar.fillStyle(0x001a33, 0.4);
+    bar.fillRect(0, GAME_HEIGHT - 26, GAME_WIDTH, 26);
+    bar.lineStyle(1, 0x003355, 0.5);
+    bar.beginPath(); bar.moveTo(0, GAME_HEIGHT - 26); bar.lineTo(GAME_WIDTH, GAME_HEIGHT - 26); bar.strokePath();
+
+    this.startText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 13, 'CLICK TO SKIP', {
+      fontSize: '12px', fontFamily: 'monospace', color: '#336644',
+      stroke: '#001108', strokeThickness: 2
+    }).setOrigin(0.5).setDepth(11);
+    this.tweens.add({ targets: this.startText, alpha: 0.2, duration: 1000, yoyo: true, repeat: -1 });
+
+    this.runoffTriggered = false;
+    this.gameStarting    = false;
+
+    // Auto-transition to phase 2 after 2 seconds
+    this.time.delayedCall(2000, () => this.startPhase2());
+
+    this.input.on('pointerdown', () => {
+      this.alertSound.stop();
+      this.scene.start('Game');
+    });
+  }
+
+  startPhase2() {
+    this.phase = 2;
+
+    // Swap walkers: 50% frantic_female, 50% frantic_male
+    for (const w of this.walkers) w.sprite.destroy();
+    this.walkers = [];
+    const count = 5 + Math.floor(Math.random() * 4); // 5–8
+    for (let i = 0; i < count; i++) {
+      const ft = Math.random() < 0.5 ? 'frantic_female' : 'frantic_male';
+      this.walkers.push(new Walker(this, ft));
+    }
+
+    // Show alert overlay
+    this.alertImg.setVisible(true);
+
+    // Flash red border
+    this.tweens.add({
+      targets: this.borderGfx,
+      alpha: { from: 0.85, to: 0.15 },
+      duration: 280,
+      yoyo: true,
+      repeat: -1,
+    });
+
+    // Play alert sound
+    this.alertSound.play();
+
+    // Make prompt text urgent
+    this.startText.setColor('#ff4444').setStroke('#220000', 3);
+
+    // After 1.5s everyone runs off-screen, then game starts automatically
+    this.time.delayedCall(1500, () => this.triggerRunoff());
+  }
+
+  triggerRunoff() {
+    this.runoffTriggered = true;
+    for (const w of this.walkers) w.startRunoff();
+    this.tweens.killTweensOf(this.borderGfx);
+    this.tweens.add({ targets: [this.alertImg, this.borderGfx], alpha: 0, duration: 500 });
+  }
+
+  update(_, delta) {
+    for (const w of this.walkers) w.update(delta);
+
+    if (this.runoffTriggered && !this.gameStarting && this.walkers.every(w => w.offScreen)) {
+      this.gameStarting = true;
+      this.alertSound.stop();
+      this.scene.start('Game');
+    }
+  }
+}
+
 // ─── SettingsScene ───────────────────────────────────────────────────────────
 class SettingsScene extends Phaser.Scene {
   constructor() { super('Settings'); }
@@ -1555,6 +1767,6 @@ const config = {
     roundPixels: false,
     mipmapFilter: 'LINEAR_MIPMAP_LINEAR',
   },
-  scene: [BootScene, SplashScene, InstructionsScene, GameScene, SettingsScene],
+  scene: [BootScene, SplashScene, InstructionsScene, IntroScene, GameScene, SettingsScene],
 };
 new Phaser.Game(config);
