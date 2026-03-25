@@ -563,6 +563,10 @@ class BootScene extends Phaser.Scene {
     this.load.atlas('frantic_male',   'resources/frantic_male/spritesheet/spritesheet.png',   'resources/frantic_male/spritesheet/spritesheet.json');
     this.load.image('alert', 'resources/alert.png');
     this.load.audio('alert_2', 'resources/sounds/effects/alert_2.mp3');
+    this.load.image('teheranbg',  'resources/Teheran_bg.png');
+    this.load.image('f35',        'resources/F35.png');
+    this.load.image('truck_loaded', 'resources/truck/truck_loaded.png');
+    this.load.image('truck_empty',  'resources/truck/truck_empty.png');
     this.load.audio('bad', 'resources/sounds/effects/bad.mp3');
     this.load.audio('pop', 'resources/sounds/effects/pop.mp3');
     this.load.audio('laser',  'resources/sounds/effects/laser.mp3');
@@ -938,6 +942,13 @@ class GameScene extends Phaser.Scene {
     this.combo = 0;
     this.comboTimer = 0;
 
+    this.lastBonusWave = 0;
+    this.bonusActive = false;
+    this.events.on('resume', (sys, data) => {
+      this.bonusActive = false;
+      if (data && data.bonusScore) this.score += data.bonusScore;
+    });
+
     // Background: city image stretched to fill game area
     this.add.image(GAME_WIDTH / 2, GAME_HEIGHT / 2, 'citybg')
       .setDisplaySize(GAME_WIDTH, GAME_HEIGHT);
@@ -1005,6 +1016,38 @@ class GameScene extends Phaser.Scene {
 
     // Keyboard
     this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+    this.isPaused = false;
+    this.pauseOverlay = null;
+    this.pauseText = null;
+    this._zeroCount = 0;
+    this._zeroTimer = 0;
+    this.input.keyboard.on('keydown-ZERO', () => {
+      if (this.isOver || this.bonusActive) return;
+      this._zeroCount++;
+      this._zeroTimer = 1500; // ms window to hit 3 presses
+      if (this._zeroCount >= 3) {
+        this._zeroCount = 0;
+        this.bonusActive = true;
+        for (const m of this.enemyMissiles) m.destroy();
+        this.enemyMissiles = [];
+        this.scene.pause();
+        this.scene.launch('Bonus');
+      }
+    });
+    this.input.keyboard.on('keydown-P', () => {
+      if (this.isOver) return;
+      this.isPaused = !this.isPaused;
+      if (this.isPaused) {
+        this.pauseOverlay = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.5).setDepth(100);
+        this.pauseText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2, 'PAUSED\nPress P to resume', {
+          fontSize: '32px', fontFamily: 'monospace', color: '#ffffff',
+          stroke: '#000', strokeThickness: 4, align: 'center'
+        }).setOrigin(0.5).setDepth(101);
+      } else {
+        this.pauseOverlay.destroy(); this.pauseOverlay = null;
+        this.pauseText.destroy();   this.pauseText = null;
+      }
+    });
     this.launchSound = this.sound.add('launch');
 
     // Fade in all HUD elements
@@ -1359,6 +1402,13 @@ class GameScene extends Phaser.Scene {
   update(time, delta) {
     if (this.isOver) return;
 
+    if (this.isPaused) return;
+
+    if (this._zeroTimer > 0) {
+      this._zeroTimer -= delta;
+      if (this._zeroTimer <= 0) this._zeroCount = 0;
+    }
+
     this.gameTime += delta / 1000;
     this.spawnTimer -= delta / 1000;
     if (this.comboTimer > 0) {
@@ -1419,6 +1469,18 @@ class GameScene extends Phaser.Scene {
     }
     if (Phaser.Input.Keyboard.JustDown(this.spaceKey) && this.ironBeamReady) {
       this.fireIronBeam();
+    }
+
+    // Bonus wave trigger: every 5th wave (wave 5, 10, …)
+    const curWave = this.getStageIndex() + 1;
+    if (!this.bonusActive && curWave % 5 === 0 && curWave > this.lastBonusWave) {
+      this.lastBonusWave = curWave;
+      this.bonusActive = true;
+      // Clear airborne missiles so the player isn't hit while scene is paused
+      for (const m of this.enemyMissiles) m.destroy();
+      this.enemyMissiles = [];
+      this.scene.pause();
+      this.scene.launch('Bonus');
     }
 
     // HUD
@@ -1625,6 +1687,282 @@ class IntroScene extends Phaser.Scene {
   }
 }
 
+// ─── BonusTruckMissile ───────────────────────────────────────────────────────
+class BonusTruckMissile {
+  constructor(scene, x, y, tx, ty) {
+    this.scene = scene;
+    this.x = x;
+    this.y = y;
+    this.alive = true;
+    const dx = tx - x, dy = ty - y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const speed = 180;
+    this.vx = (dx / dist) * speed;
+    this.vy = (dy / dist) * speed;
+    this.frame = 0;
+    this.frameTimer = 0;
+    const angle = Math.atan2(dy, dx);
+    this.sprite = scene.add.sprite(x, y, 'missile', 0)
+      .setScale(0.142)
+      .setOrigin(0.5)
+      .setRotation(angle + Math.PI / 2);
+  }
+
+  update(delta) {
+    if (!this.alive) return;
+    this.x += this.vx * delta / 1000;
+    this.y += this.vy * delta / 1000;
+    this.sprite.setPosition(this.x, this.y);
+    this.frameTimer += delta;
+    if (this.frameTimer > 150) {
+      this.frame = 1 - this.frame;
+      this.sprite.setFrame(this.frame);
+      this.frameTimer = 0;
+    }
+    if (this.x < -60 || this.x > GAME_WIDTH + 60 || this.y < -60) this.destroy();
+  }
+
+  destroy() {
+    this.alive = false;
+    if (this.sprite) { this.sprite.destroy(); this.sprite = null; }
+  }
+}
+
+// ─── BonusBomb ────────────────────────────────────────────────────────────────
+class BonusBomb {
+  constructor(scene, x, y) {
+    this.scene = scene;
+    this.x = x;
+    this.y = y;
+    this.alive = true;
+    this.speed = 320;
+    this.graphics = scene.add.graphics();
+    this._draw();
+  }
+
+  _draw() {
+    const g = this.graphics;
+    g.clear();
+    g.fillStyle(0x222222, 1);
+    g.fillEllipse(this.x, this.y, 12, 20);
+    g.fillStyle(0xffaa00, 1);
+    g.fillCircle(this.x, this.y - 10, 5);
+  }
+
+  update(delta) {
+    if (!this.alive) return;
+    this.y += this.speed * delta / 1000;
+    this._draw();
+    if (this.y > GAME_HEIGHT + 20) { this.alive = false; this.graphics.destroy(); }
+  }
+}
+
+// ─── BonusTruck ───────────────────────────────────────────────────────────────
+class BonusTruck {
+  constructor(scene) {
+    this.scene = scene;
+    this.alive = true;
+    this.state = 'entering';
+    this.waitTimer = 0;
+
+    const fromLeft = Math.random() < 0.5;
+    this.dir = fromLeft ? 1 : -1;
+    this.x = fromLeft ? -70 : GAME_WIDTH + 70;
+    this.y = GAME_HEIGHT - 30;
+    this.targetX = 160 + Math.random() * (GAME_WIDTH - 320);
+    this.speed = 80 + Math.random() * 40;
+
+    this.sprite = scene.add.image(this.x, this.y, 'truck_loaded')
+      .setDisplaySize(120, 55)
+      .setOrigin(0.5, 1)
+      .setFlipX(fromLeft); // flip so truck faces direction of travel
+  }
+
+  update(delta) {
+    if (!this.alive) return;
+
+    if (this.state === 'entering') {
+      this.x += this.dir * this.speed * delta / 1000;
+      this.sprite.setX(this.x);
+      const arrived = this.dir > 0 ? this.x >= this.targetX : this.x <= this.targetX;
+      if (arrived) {
+        this.x = this.targetX;
+        this.state = 'waiting';
+        this.waitTimer = 500;
+      }
+    } else if (this.state === 'waiting') {
+      this.waitTimer -= delta;
+      if (this.waitTimer <= 0) {
+        this.fireMissile();
+        this.sprite.setTexture('truck_empty').setDisplaySize(120, 55);
+        this.state = 'leaving';
+      }
+    } else if (this.state === 'leaving') {
+      this.x += this.dir * this.speed * delta / 1000;
+      this.sprite.setX(this.x);
+      if (this.x < -120 || this.x > GAME_WIDTH + 120) this.destroy();
+    }
+  }
+
+  fireMissile() {
+    const tx = 50 + Math.random() * (GAME_WIDTH - 100);
+    const ty = Math.random() * (GAME_HEIGHT / 3);
+    this.scene.missiles.push(new BonusTruckMissile(this.scene, this.x, this.y - 55, tx, ty));
+  }
+
+  destroy() {
+    this.alive = false;
+    if (this.sprite) { this.sprite.destroy(); this.sprite = null; }
+  }
+}
+
+// ─── BonusScene ───────────────────────────────────────────────────────────────
+class BonusScene extends Phaser.Scene {
+  constructor() { super('Bonus'); }
+
+  create() {
+    this.bonusScore = 0;
+    this.trucks = [];
+    this.missiles = [];
+    this.bombs = [];
+    this.done = false;
+    this.trucksSpawned = 0;
+    this.trucksTotal = 5;
+    this.spawnTimer = 600;
+
+    // Background
+    this.add.image(GAME_WIDTH / 2, GAME_HEIGHT / 2, 'teheranbg')
+      .setDisplaySize(GAME_WIDTH, GAME_HEIGHT);
+
+    // Ground strip
+    const gnd = this.add.graphics();
+    gnd.fillStyle(0x445533, 1);
+    gnd.fillRect(0, GAME_HEIGHT - 30, GAME_WIDTH, 30);
+    gnd.lineStyle(2, 0x88aa44, 1);
+    gnd.beginPath(); gnd.moveTo(0, GAME_HEIGHT - 30);
+    gnd.lineTo(GAME_WIDTH, GAME_HEIGHT - 30); gnd.strokePath();
+
+    // Header bar
+    this.add.rectangle(GAME_WIDTH / 2, 20, GAME_WIDTH, 40, 0x000000, 0.65);
+    this.add.text(GAME_WIDTH / 2, 20, 'BONUS STAGE — DESTROY THE LAUNCHERS!', {
+      fontSize: '14px', fontFamily: 'monospace', color: '#ffdd00'
+    }).setOrigin(0.5);
+    this.bonusText = this.add.text(10, 20, 'BONUS: 0', {
+      fontSize: '13px', fontFamily: 'monospace', color: '#ffffff'
+    }).setOrigin(0, 0.5);
+
+    // F-35
+    this.f35X = -60;
+    this.f35Y = 100;
+    this.f35Dir = 1;
+    this.f35Speed = 130;
+    this.f35Sprite = this.add.image(this.f35X, this.f35Y, 'f35')
+      .setDisplaySize(117, 47)
+      .setOrigin(0.5);
+
+    // Bomb drop hint
+    this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT - 12, GAME_WIDTH, 24, 0x000000, 0.45);
+    this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 12, 'CLICK TO DROP BOMB', {
+      fontSize: '11px', fontFamily: 'monospace', color: '#999999'
+    }).setOrigin(0.5);
+
+    this.input.on('pointerdown', () => { if (!this.done) this._dropBomb(); });
+
+    // Auto-end after 25 s
+    this.time.delayedCall(25000, () => this._endBonus());
+  }
+
+  _dropBomb() {
+    this.bombs.push(new BonusBomb(this, this.f35X, this.f35Y + 18));
+  }
+
+  _showExplosion(x, y) {
+    const g = this.add.graphics();
+    const t = { r: 5, alpha: 1 };
+    this.tweens.add({
+      targets: t, r: 45, alpha: 0, duration: 600,
+      onUpdate: () => {
+        g.clear();
+        g.fillStyle(0xff8800, t.alpha * 0.8);
+        g.fillCircle(x, y, t.r);
+        g.fillStyle(0xffff00, t.alpha * 0.5);
+        g.fillCircle(x, y, t.r * 0.5);
+      },
+      onComplete: () => g.destroy(),
+    });
+  }
+
+  _endBonus() {
+    if (this.done) return;
+    this.done = true;
+
+    this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 380, 60, 0x000000, 0.75);
+    this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2, `BONUS +${this.bonusScore} — RETURNING TO BATTLE…`, {
+      fontSize: '16px', fontFamily: 'monospace', color: '#ffffff'
+    }).setOrigin(0.5);
+
+    this.time.delayedCall(1800, () => {
+      const gameScene = this.scene.get('Game');
+      gameScene.score += this.bonusScore;
+      gameScene.bonusActive = false;
+      this.scene.stop();
+      this.scene.resume('Game');
+    });
+  }
+
+  update(_, delta) {
+    if (this.done) return;
+
+    // Fly F-35
+    this.f35X += this.f35Dir * this.f35Speed * delta / 1000;
+    if (this.f35X > GAME_WIDTH + 60) { this.f35X = GAME_WIDTH + 60; this.f35Dir = -1; }
+    if (this.f35X < -60) { this.f35X = -60; this.f35Dir = 1; }
+    this.f35Sprite.setPosition(this.f35X, this.f35Y).setFlipX(this.f35Dir < 0);
+
+    // Spawn trucks
+    if (this.trucksSpawned < this.trucksTotal) {
+      this.spawnTimer -= delta;
+      if (this.spawnTimer <= 0) {
+        this.trucks.push(new BonusTruck(this));
+        this.trucksSpawned++;
+        this.spawnTimer = 2000 + Math.random() * 2500;
+      }
+    }
+
+    // Update entities
+    for (const t of this.trucks) t.update(delta);
+    for (const m of this.missiles) m.update(delta);
+    for (const b of this.bombs) b.update(delta);
+
+    // Bomb → truck collisions
+    for (const b of this.bombs) {
+      if (!b.alive) continue;
+      for (const t of this.trucks) {
+        if (!t.alive) continue;
+        const dx = b.x - t.x, dy = b.y - (t.y - 28);
+        if (dx * dx + dy * dy < 55 * 55) {
+          b.alive = false;
+          b.graphics.destroy();
+          this._showExplosion(t.x, t.y - 28);
+          t.destroy();
+          this.bonusScore += 50;
+          this.bonusText.setText(`BONUS: ${this.bonusScore}`);
+        }
+      }
+    }
+
+    pruneArray(this.trucks);
+    pruneArray(this.missiles);
+    pruneArray(this.bombs);
+
+    // End when all trucks accounted for and gone
+    if (this.trucksSpawned >= this.trucksTotal &&
+        this.trucks.length === 0 && this.missiles.length === 0) {
+      this._endBonus();
+    }
+  }
+}
+
 // ─── SettingsScene ───────────────────────────────────────────────────────────
 class SettingsScene extends Phaser.Scene {
   constructor() { super('Settings'); }
@@ -1774,6 +2112,6 @@ const config = {
     roundPixels: false,
     mipmapFilter: 'LINEAR_MIPMAP_LINEAR',
   },
-  scene: [BootScene, SplashScene, InstructionsScene, IntroScene, GameScene, SettingsScene],
+  scene: [BootScene, SplashScene, InstructionsScene, IntroScene, GameScene, BonusScene, SettingsScene],
 };
 new Phaser.Game(config);
