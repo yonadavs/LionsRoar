@@ -27,6 +27,9 @@ const DIFFICULTY_STAGES = [
 
 const DIFFICULTY_SPEED = { easy: 0.75, normal: 1.0, hard: 1.35 };
 
+const HP_PERK_AMOUNT        = { easy: 25, normal: 20, hard: 15 };
+const POWERUP_SPAWN_INTERVAL = { easy: 20, normal: 30, hard: 45 }; // seconds
+
 // ─── Settings (persisted via localStorage) ───────────────────────────────────
 function getSettings() {
   return {
@@ -324,8 +327,9 @@ class Explosion {
     this.x = x;
     this.y = y;
     this.age = 0;
-    this.maxAge = EXPLOSION_DURATION;
-    this.maxRadius = EXPLOSION_MAX_RADIUS;
+    const powerMult = scene.missilePowerActive ? 1.2 : 1;
+    this.maxAge    = EXPLOSION_DURATION    * powerMult;
+    this.maxRadius = EXPLOSION_MAX_RADIUS  * powerMult;
     this.radius = 0;
     this.alive = true;
     this.graphics = scene.add.graphics();
@@ -452,6 +456,48 @@ class DebrisParticle {
   }
 }
 
+// ─── PowerUp ─────────────────────────────────────────────────────────────────
+class PowerUp {
+  constructor(scene, type) {
+    this.scene = scene;
+    this.type  = type; // 'hp'
+    this.alive = true;
+    this.age   = 0;
+
+    this.x = Phaser.Math.Between(60, GAME_WIDTH - 60);
+    this.y = -56;
+
+    // Gentle fall with slight pendulum sway
+    this.fallSpeed = 45 + Math.random() * 20;
+    this.swayAmp   = 18 + Math.random() * 12;
+    this.swayFreq  = 0.8 + Math.random() * 0.4;
+    this.originX   = this.x;
+
+    const key = type === 'missile' ? 'power_perk' : 'hp_perk';
+    this.sprite = scene.add.image(this.x, this.y, key)
+      .setDisplaySize(56, 56)
+      .setOrigin(0.5);
+  }
+
+  update(delta) {
+    if (!this.alive) return;
+    this.age += delta / 1000;
+
+    this.y += this.fallSpeed * delta / 1000;
+    this.x  = this.originX + Math.sin(this.age * this.swayFreq * Math.PI * 2) * this.swayAmp;
+
+    this.sprite.setPosition(this.x, this.y);
+
+    // Hit the ground — disappear silently
+    if (this.y >= STATION_Y) this.destroy();
+  }
+
+  destroy() {
+    this.alive = false;
+    this.sprite.destroy();
+  }
+}
+
 // ─── Flash ───────────────────────────────────────────────────────────────────
 class Flash {
   constructor(scene, x, y) {
@@ -561,7 +607,10 @@ class BootScene extends Phaser.Scene {
     this.load.atlas('female',         'resources/female/spritesheet/spritesheet.png',         'resources/female/spritesheet/spritesheet.json');
     this.load.atlas('frantic_female', 'resources/frantic_female/spritesheet/spritesheet.png', 'resources/frantic_female/spritesheet/spritesheet.json');
     this.load.atlas('frantic_male',   'resources/frantic_male/spritesheet/spritesheet.png',   'resources/frantic_male/spritesheet/spritesheet.json');
-    this.load.image('alert', 'resources/alert.png');
+    this.load.image('alert',              'resources/alert.png');
+    this.load.image('hp_perk',            'resources/hp_perk.png');
+    this.load.image('power_perk',         'resources/power_perk.png');
+    this.load.image('missile_power_icon', 'resources/missile_power_icon.png');
     this.load.audio('alert_2', 'resources/sounds/effects/alert_2.mp3');
     this.load.image('teheranbg',  'resources/Teheran_bg.png');
     this.load.image('f35',        'resources/F35.png');
@@ -570,7 +619,9 @@ class BootScene extends Phaser.Scene {
     this.load.audio('bad', 'resources/sounds/effects/bad.mp3');
     this.load.audio('pop', 'resources/sounds/effects/pop.mp3');
     this.load.audio('laser',  'resources/sounds/effects/laser.mp3');
-    this.load.audio('launch', 'resources/sounds/effects/launch.mp3');
+    this.load.audio('launch',     'resources/sounds/effects/launch.mp3');
+    this.load.audio('health_up',  'resources/sounds/effects/health_up.mp3');
+    this.load.audio('missile_up', 'resources/sounds/effects/missile_up.mp3');
     this.load.audio('menuMusic',   'resources/sounds/music/menu.mp3');
     this.load.audio('gameMusic',   'resources/sounds/music/game.mp3');
     this.load.audio('bonusMusic',  'resources/sounds/music/teheran.mp3');
@@ -944,6 +995,12 @@ class GameScene extends Phaser.Scene {
     this.combo = 0;
     this.comboTimer = 0;
 
+    this.powerUps = [];
+    this.powerUpTimer = POWERUP_SPAWN_INTERVAL[getSettings().difficulty];
+
+    this.missilePowerActive = false;
+    this.missilePowerTimer  = 0; // ms remaining
+
     this.lastBonusWave = 0;
     this.bonusActive = false;
     this.events.on('resume', (sys, data) => {
@@ -1016,11 +1073,41 @@ class GameScene extends Phaser.Scene {
       fontSize: '9px', fontFamily: 'monospace', color: '#88ddff'
     }).setOrigin(0.5, 1).setAlpha(0);
 
+    // Missile power HUD (hidden until active)
+    const mpX = 100, mpY = GAME_HEIGHT - 36;
+    this.mpHudGfx  = this.add.graphics().setAlpha(0);
+    this.mpHudIcon = this.add.image(mpX, mpY, 'missile_power_icon')
+      .setDisplaySize(38, 38).setOrigin(0.5).setAlpha(0);
+
     // Keyboard
     this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
     this.isPaused = false;
     this.pauseOverlay = null;
     this.pauseText = null;
+    this._oneCount = 0;
+    this._oneTimer = 0;
+    this.input.keyboard.on('keydown-ONE', () => {
+      if (this.isOver || this.isPaused) return;
+      this._oneCount++;
+      this._oneTimer = 1500;
+      if (this._oneCount >= 3) {
+        this._oneCount = 0;
+        this.powerUps.push(new PowerUp(this, 'hp'));
+      }
+    });
+
+    this._twoCount = 0;
+    this._twoTimer = 0;
+    this.input.keyboard.on('keydown-TWO', () => {
+      if (this.isOver || this.isPaused) return;
+      this._twoCount++;
+      this._twoTimer = 1500;
+      if (this._twoCount >= 3) {
+        this._twoCount = 0;
+        this.powerUps.push(new PowerUp(this, 'missile'));
+      }
+    });
+
     this._zeroCount = 0;
     this._zeroTimer = 0;
     this.input.keyboard.on('keydown-ZERO', () => {
@@ -1133,6 +1220,19 @@ class GameScene extends Phaser.Scene {
       }
     }
 
+    // Power-up collection — explosion radius catches a power-up
+    for (const exp of this.explosions) {
+      if (!exp.alive) continue;
+      const r2 = exp.radius * exp.radius;
+      for (const p of this.powerUps) {
+        if (!p.alive) continue;
+        if (distSq(exp.x, exp.y, p.x, p.y) < r2) {
+          p.destroy();
+          this.collectPowerUp(p.type);
+        }
+      }
+    }
+
     if (kills > 0) {
       const base = SCORE_PER_KILL[getSettings().difficulty];
       let pts;
@@ -1179,6 +1279,101 @@ class GameScene extends Phaser.Scene {
         }
       }
     }
+  }
+
+  collectPowerUp(type) {
+    if (type === 'hp') {
+      const gain = HP_PERK_AMOUNT[getSettings().difficulty];
+      this.hp = Math.min(HP_MAX, this.hp + gain);
+      this.showPopText(STATION_X, STATION_Y - 80, `+${gain} HP`);
+      this.sound.play('health_up', { volume: getSettings().sfxVol });
+      this._doHpPerkEffect();
+    } else if (type === 'missile') {
+      this.missilePowerActive = true;
+      this.missilePowerTimer  = 7000;
+      this.showPopText(STATION_X, STATION_Y - 80, 'MISSILE POWER!');
+      this.sound.play('missile_up', { volume: getSettings().sfxVol });
+    }
+  }
+
+  _doHpPerkEffect() {
+    const turret = this.turretSprite;
+    const tx = STATION_X, ty = STATION_Y - 20;
+
+    // Flash turret green
+    turret.setTint(0x44ff44);
+    this.tweens.add({
+      targets: turret, alpha: 0.4, yoyo: true, repeat: 3,
+      duration: 100,
+      onComplete: () => { turret.clearTint(); turret.setAlpha(1); }
+    });
+
+    // Rising glowing "+" signs
+    for (let i = 0; i < 5; i++) {
+      const ox = (Math.random() - 0.5) * 50;
+      const plus = this.add.text(tx + ox, ty, '+', {
+        fontSize: `${14 + Math.random() * 10 | 0}px`,
+        fontFamily: 'monospace',
+        color: '#44ff88',
+        stroke: '#004422',
+        strokeThickness: 3,
+      }).setOrigin(0.5).setAlpha(0.9);
+
+      this.tweens.add({
+        targets: plus,
+        y: ty - 55 - Math.random() * 20,
+        alpha: 0,
+        duration: 900 + Math.random() * 300,
+        delay: i * 80,
+        ease: 'Quad.easeOut',
+        onComplete: () => plus.destroy(),
+      });
+    }
+  }
+
+  drawMissilePowerHUD() {
+    const mpX = 100, mpY = GAME_HEIGHT - 36, r = 24;
+    const g = this.mpHudGfx;
+    g.clear();
+
+    if (!this.missilePowerActive) {
+      this.mpHudGfx.setAlpha(0);
+      this.mpHudIcon.setAlpha(0);
+      return;
+    }
+
+    // Tick down timer
+    this.missilePowerTimer -= this.game.loop.delta;
+    if (this.missilePowerTimer <= 0) {
+      this.missilePowerActive = false;
+      this.missilePowerTimer  = 0;
+      this.mpHudGfx.setAlpha(0);
+      this.mpHudIcon.setAlpha(0);
+      return;
+    }
+
+    this.mpHudGfx.setAlpha(1);
+
+    // Slowly flash the icon (0.55–1.0 alpha cycle ~1.4 s)
+    const flash = 0.75 + 0.25 * Math.sin(Date.now() * 0.0045);
+    this.mpHudIcon.setAlpha(flash);
+
+    // Dark circle background
+    g.fillStyle(0x001122, 0.8);
+    g.fillCircle(mpX, mpY, r);
+
+    // Rim ring
+    g.lineStyle(3, 0xffaa00, 0.6);
+    g.strokeCircle(mpX, mpY, r);
+
+    // Radial countdown arc (orange, drains clockwise from top)
+    const frac = this.missilePowerTimer / 7000;
+    const startAngle = -Math.PI / 2;
+    const endAngle   = startAngle + frac * Math.PI * 2;
+    g.lineStyle(4, 0xffdd00, 1);
+    g.beginPath();
+    g.arc(mpX, mpY, r, startAngle, endAngle, false);
+    g.strokePath();
   }
 
   showPopText(x, y, msg) {
@@ -1406,6 +1601,14 @@ class GameScene extends Phaser.Scene {
 
     if (this.isPaused) return;
 
+    if (this._oneTimer > 0) {
+      this._oneTimer -= delta;
+      if (this._oneTimer <= 0) this._oneCount = 0;
+    }
+    if (this._twoTimer > 0) {
+      this._twoTimer -= delta;
+      if (this._twoTimer <= 0) this._twoCount = 0;
+    }
     if (this._zeroTimer > 0) {
       this._zeroTimer -= delta;
       if (this._zeroTimer <= 0) this._zeroCount = 0;
@@ -1451,6 +1654,15 @@ class GameScene extends Phaser.Scene {
     // Update debris
     for (const d of this.debris) d.update(delta);
 
+    // Spawn & update power-ups
+    this.powerUpTimer -= delta / 1000;
+    if (this.powerUpTimer <= 0) {
+      const puType = Math.random() < 0.5 ? 'hp' : 'missile';
+      this.powerUps.push(new PowerUp(this, puType));
+      this.powerUpTimer = POWERUP_SPAWN_INTERVAL[getSettings().difficulty];
+    }
+    for (const p of this.powerUps) p.update(delta);
+
     // Collisions & ground hits
     this.checkCollisions();
     this.checkGroundHits();
@@ -1462,6 +1674,7 @@ class GameScene extends Phaser.Scene {
     pruneArray(this.flashes);
     pruneArray(this.launchFlashes);
     pruneArray(this.debris);
+    pruneArray(this.powerUps);
 
     // Iron Beam charge + fire
     const CHARGE_TIME = 7000;
@@ -1489,6 +1702,7 @@ class GameScene extends Phaser.Scene {
     this.drawHUD();
     this.drawHealthBar();
     this.drawIronBeamHUD();
+    this.drawMissilePowerHUD();
     this.drawCrosshair();
     this.updateTurretFrame();
   }
