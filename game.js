@@ -2069,7 +2069,7 @@ class BonusScene extends Phaser.Scene {
 
     // F-35
     this.f35X = -60;
-    this.f35Y = 100;
+    this.f35Y = GAME_HEIGHT * 0.3;
     this.f35Dir = 1;
     this.f35Angle = 0; // radians, smoothed flight direction
     this.f35Speed = 130;
@@ -2164,23 +2164,25 @@ class BonusScene extends Phaser.Scene {
   update(_, delta) {
     if (this.done) return;
 
-    // Fly F-35 — chase mouse, capped at flight speed
+    // Fly F-35 — steer by mouse velocity, always move at full speed
     const ptr = this.input.activePointer;
-    const dx = ptr.x - this.f35X;
-    const dy = ptr.y - this.f35Y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist > 1) {
-      const step = Math.min(dist, this.f35Speed * delta / 1000);
-      this.f35X += (dx / dist) * step;
-      this.f35Y += (dy / dist) * step;
-      // Smooth angle toward travel direction
-      const targetAngle = Math.atan2(dy, dx);
-      let diff = targetAngle - this.f35Angle;
-      while (diff >  Math.PI) diff -= 2 * Math.PI;
-      while (diff < -Math.PI) diff += 2 * Math.PI;
-      this.f35Angle += diff * Math.min(1, delta / 80);
-      this.f35Dir = dx >= 0 ? 1 : -1;
+    const px = ptr.x, py = ptr.y;
+    if (this._lastPtrX !== null) {
+      const mdx = px - this._lastPtrX, mdy = py - this._lastPtrY;
+      if (mdx * mdx + mdy * mdy > 4) {
+        const targetAngle = Math.atan2(mdy, mdx);
+        let diff = targetAngle - this.f35Angle;
+        while (diff >  Math.PI) diff -= 2 * Math.PI;
+        while (diff < -Math.PI) diff += 2 * Math.PI;
+        this.f35Angle += diff * Math.min(1, delta / 80);
+        this.f35Dir = mdx >= 0 ? 1 : -1;
+      }
     }
+    // Always advance at full speed along current angle
+    this.f35X += Math.cos(this.f35Angle) * this.f35Speed * delta / 1000;
+    this.f35Y += Math.sin(this.f35Angle) * this.f35Speed * delta / 1000;
+    // Wrap/clamp so it stays on screen
+    this.f35X = Phaser.Math.Clamp(this.f35X, -60, GAME_WIDTH + 60);
     // F-35 sprite points right by default; flipX when going left, mirror rotation
     this.f35Sprite.setPosition(this.f35X, this.f35Y)
       .setFlipX(this.f35Dir < 0)
@@ -2243,7 +2245,6 @@ class BonusScene extends Phaser.Scene {
     pruneArray(this.bombs);
 
     // Arrow cursor — angle tracks movement direction
-    const px = ptr.x, py = ptr.y;
     if (this._lastPtrX !== null) {
       const mdx = px - this._lastPtrX, mdy = py - this._lastPtrY;
       if (mdx * mdx + mdy * mdy > 4) { // only update when moved enough to be meaningful
