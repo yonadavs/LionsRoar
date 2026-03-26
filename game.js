@@ -571,16 +571,18 @@ class BootScene extends Phaser.Scene {
     this.load.audio('pop', 'resources/sounds/effects/pop.mp3');
     this.load.audio('laser',  'resources/sounds/effects/laser.mp3');
     this.load.audio('launch', 'resources/sounds/effects/launch.mp3');
-    this.load.audio('menuMusic', 'resources/sounds/music/menu.mp3');
-    this.load.audio('gameMusic', 'resources/sounds/music/game.mp3');
+    this.load.audio('menuMusic',   'resources/sounds/music/menu.mp3');
+    this.load.audio('gameMusic',   'resources/sounds/music/game.mp3');
+    this.load.audio('bonusMusic',  'resources/sounds/music/teheran.mp3');
   }
 
   create() {
     if (localStorage.getItem(HI_SCORE_KEY) === null) {
       localStorage.setItem(HI_SCORE_KEY, '0');
     }
-    this.sound.add('menuMusic', { loop: true });
-    this.sound.add('gameMusic', { loop: true });
+    this.sound.add('menuMusic',  { loop: true });
+    this.sound.add('gameMusic',  { loop: true });
+    this.sound.add('bonusMusic', { loop: true });
     this.scene.start('Splash', { gameOver: false, score: 0 });
   }
 }
@@ -1855,6 +1857,7 @@ class BonusScene extends Phaser.Scene {
     this.f35X = -60;
     this.f35Y = 100;
     this.f35Dir = 1;
+    this.f35Angle = 0; // radians, smoothed flight direction
     this.f35Speed = 130;
     this.f35Sprite = this.add.image(this.f35X, this.f35Y, 'f35')
       .setDisplaySize(117, 47)
@@ -1868,8 +1871,38 @@ class BonusScene extends Phaser.Scene {
 
     this.input.on('pointerdown', () => { if (!this.done) this._dropBomb(); });
 
+    // Music
+    this.sound.get('gameMusic').stop();
+    const bonus = this.sound.get('bonusMusic');
+    bonus.setVolume(getSettings().musicVol);
+    if (!bonus.isPlaying) bonus.play();
+
+    // Custom arrow cursor
+    this.input.setDefaultCursor('none');
+    this.cursorGfx = this.add.graphics().setDepth(200);
+    this.cursorAngle = -Math.PI / 2; // default: pointing up
+    this._lastPtrX = null;
+    this._lastPtrY = null;
+
     // Auto-end after 25 s
     this.time.delayedCall(25000, () => this._endBonus());
+  }
+
+  _drawCursorArrow(x, y, angle) {
+    const g = this.cursorGfx;
+    g.clear();
+    // Arrow: tip at (x,y), pointing in `angle` direction
+    const len = 18, hw = 7, tail = 10;
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+    // Points relative to tip
+    const tip  = { x: x + cos * len,        y: y + sin * len };
+    const base = { x: x - cos * tail,       y: y - sin * tail };
+    const lw   = { x: base.x - sin * hw,    y: base.y + cos * hw };
+    const rw   = { x: base.x + sin * hw,    y: base.y - cos * hw };
+    g.fillStyle(0xffffff, 0.9);
+    g.fillTriangle(tip.x, tip.y, lw.x, lw.y, rw.x, rw.y);
+    g.lineStyle(1.5, 0x000000, 0.7);
+    g.strokeTriangle(tip.x, tip.y, lw.x, lw.y, rw.x, rw.y);
   }
 
   _dropBomb() {
@@ -1905,6 +1938,10 @@ class BonusScene extends Phaser.Scene {
       const gameScene = this.scene.get('Game');
       gameScene.score += this.bonusScore;
       gameScene.bonusActive = false;
+      this.input.setDefaultCursor('default');
+      this.sound.get('bonusMusic').stop();
+      this.sound.get('gameMusic').setVolume(getSettings().musicVol);
+      this.sound.get('gameMusic').play();
       this.scene.stop();
       this.scene.resume('Game');
     });
@@ -1913,11 +1950,28 @@ class BonusScene extends Phaser.Scene {
   update(_, delta) {
     if (this.done) return;
 
-    // Fly F-35
-    this.f35X += this.f35Dir * this.f35Speed * delta / 1000;
-    if (this.f35X > GAME_WIDTH + 60) { this.f35X = GAME_WIDTH + 60; this.f35Dir = -1; }
-    if (this.f35X < -60) { this.f35X = -60; this.f35Dir = 1; }
-    this.f35Sprite.setPosition(this.f35X, this.f35Y).setFlipX(this.f35Dir < 0);
+    // Fly F-35 — chase mouse, capped at flight speed
+    const ptr = this.input.activePointer;
+    const dx = ptr.x - this.f35X;
+    const dy = ptr.y - this.f35Y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > 1) {
+      const step = Math.min(dist, this.f35Speed * delta / 1000);
+      this.f35X += (dx / dist) * step;
+      this.f35Y += (dy / dist) * step;
+      // Smooth angle toward travel direction
+      const targetAngle = Math.atan2(dy, dx);
+      let diff = targetAngle - this.f35Angle;
+      while (diff >  Math.PI) diff -= 2 * Math.PI;
+      while (diff < -Math.PI) diff += 2 * Math.PI;
+      this.f35Angle += diff * Math.min(1, delta / 80);
+      this.f35Dir = dx >= 0 ? 1 : -1;
+    }
+    // F-35 sprite points right by default; flipX when going left, mirror rotation
+    this.f35Sprite.setPosition(this.f35X, this.f35Y)
+      .setFlipX(this.f35Dir < 0)
+      .setFlipY(false)
+      .setRotation(this.f35Dir < 0 ? Math.PI - this.f35Angle : this.f35Angle);
 
     // Spawn trucks
     if (this.trucksSpawned < this.trucksTotal) {
@@ -1951,9 +2005,44 @@ class BonusScene extends Phaser.Scene {
       }
     }
 
+    // F-35 hit by missile or ground → end bonus
+    const F35_RADIUS = 22;
+    for (const m of this.missiles) {
+      if (!m.alive) continue;
+      const dx = this.f35X - m.x, dy = this.f35Y - m.y;
+      if (dx * dx + dy * dy < F35_RADIUS * F35_RADIUS) {
+        this._showExplosion(this.f35X, this.f35Y);
+        this.f35Sprite.destroy();
+        this._endBonus();
+        return;
+      }
+    }
+    if (this.f35Y >= GAME_HEIGHT - 30) {
+      this._showExplosion(this.f35X, this.f35Y);
+      this.f35Sprite.destroy();
+      this._endBonus();
+      return;
+    }
+
     pruneArray(this.trucks);
     pruneArray(this.missiles);
     pruneArray(this.bombs);
+
+    // Arrow cursor — angle tracks movement direction
+    const px = ptr.x, py = ptr.y;
+    if (this._lastPtrX !== null) {
+      const mdx = px - this._lastPtrX, mdy = py - this._lastPtrY;
+      if (mdx * mdx + mdy * mdy > 4) { // only update when moved enough to be meaningful
+        const targetAngle = Math.atan2(mdy, mdx);
+        // Shortest-path angular lerp
+        let diff = targetAngle - this.cursorAngle;
+        while (diff >  Math.PI) diff -= 2 * Math.PI;
+        while (diff < -Math.PI) diff += 2 * Math.PI;
+        this.cursorAngle += diff * Math.min(1, delta / 80);
+      }
+    }
+    this._lastPtrX = px; this._lastPtrY = py;
+    this._drawCursorArrow(px, py, this.cursorAngle);
 
     // End when all trucks accounted for and gone
     if (this.trucksSpawned >= this.trucksTotal &&
